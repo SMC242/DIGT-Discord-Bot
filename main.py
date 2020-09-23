@@ -14,7 +14,7 @@ description = """This bot was designed for the DIGT Discord by [DTWM] benmitchel
 GitHub repo:  https://github.com/SMC242/DIGT-Discord-Bot"""
 bot = Bot(
     # command prefix changes depending on DEV_VERSION
-    "devt" if DEV_VERSION else "silent_t",
+    "devt!" if DEV_VERSION else "silent_t!",
     description=description,
     owner_ids=(
         395598378387636234,  # [DTWM] benmitchellmtbV5
@@ -35,15 +35,17 @@ bot = Bot(
 # load all extensions
 for file in os.listdir("./Extensions"):
     # Assume all Python files in Extensions are extensions
-    cog_name = file[:-3]
+    if not file.endswith(".py"):
+        continue
+    ext_name = file[:-3]
     # ignore __init__ because it's not a Cog but it must be in the directory
-    if cog_name == "__init__":
+    if ext_name == "__init__":
         continue
     try:
-        bot.load_extension(f"Cogs.{cog_name}")
-        print(f"Cog ({cog_name}) loaded sucessfully")
+        bot.load_extension(f"Extensions.{ext_name}")
+        print(f"Extension ({ext_name}) loaded sucessfully")
     except:
-        print(f"Cog ({cog_name}) failed to load")
+        print(f"Extension ({ext_name}) failed to load")
         # log loading errors
         print_exc()
 
@@ -86,6 +88,6 @@ async def on_ready():
 
 if __name__ == "__main__":
     # get the token and start the bot
-    with open("./text_files/token.txt") as f:
+    with open("./secrets/token.txt") as f:
         TOKEN = f.readline().strip("\n")
     bot.run(TOKEN)
