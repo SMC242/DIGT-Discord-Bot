@@ -1,8 +1,7 @@
 from discord.ext import commands
 from discord import Emoji, Role, Message, TextChannel, HTTPException, Member, Reaction, Forbidden
 from json import load, dump  # for reading and writing to
-from typing import Union, Dict, Optional, List
-from asyncio import create_task  # for executing something later
+from typing import Union, Dict, Optional
 # Union[int, str] = either an integer or a string
 # Dict[int, str] = dictionary in this format {integer key: string value}
 
@@ -29,10 +28,11 @@ class ReactionRoles(commands.Cog):
         self.reaction_roles: Dict[int, int] = {}
 
         # the settings are saved in text_files/reaction_roles.json for persistence
-        bot.loop.create_task(self.load_settings())
-        # NOTE: since the settings are loaded later, it's possible that someone could react
-        # before it finishes loading but after the bot is ready
-        # I chose to execute later to avoid blocking other cogs loading
+        with open("./text_files/reaction_roles.json", "r") as file:
+            saved_settings = load(file)
+            self._menu_msg_id = saved_settings["menu_msg_id"]
+            self._menu_chan_id = saved_settings["menu_chan_id"]
+            self.reaction_roles = saved_settings["reaction_role_ids"]
 
     async def get_menu(self) -> Optional[Message]:
         """
@@ -42,10 +42,14 @@ class ReactionRoles(commands.Cog):
         ### Returns
             `Discord.Message`:
                 The Message object if it was successfully retrieved.
+
+        ### Raises
+            ValueError: _menu_msg_id or _menu_chan_id isn't set
         """
         # make sure that the ids are set
         if not all((self._menu_msg_id, self._menu_chan_id)):
-            return None
+            raise ValueError(
+                "Cannot get the menu without the channel and message id")
 
         channel: TextChannel = self.bot.get_channel(self._menu_chan_id)
         if not channel:  # the channel may fail to be retrieved
@@ -53,38 +57,14 @@ class ReactionRoles(commands.Cog):
 
         # attempt to get the message
         try:
-            return await channel.fetch_message(self._menu_msg_id)
-        except HTTPException:  # failed to get message due to a Forbidden or NotFound response
+            msg = await channel.fetch_message()
+        except HTTPException:
             return None
-
-    async def load_settings(self):
-        """
-        ### (method) load_settings()
-        Load the currently saved `reaction_roles` dict and IDs for `role_menu`.
-        Verify that `role_menu` still exists.
-        """
-        # read settings from the file
-        with open("./text_files/reaction_roles.json", "r") as file:
-            saved_settings = load(file)
-            self._menu_msg_id = saved_settings["menu_msg_id"]
-            self._menu_chan_id = saved_settings["menu_chan_id"]
-            self.reaction_roles = saved_settings["reaction_role_ids"]
-
-        # verify the message
-        # wait until the bot is ready or else `get_channel` will fail
-        await self.bot.wait_until_ready()
-        menu = await self.get_menu()
-        # unbind the menu if it doesn't exist anymore
-        if not menu:
-            self._menu_msg_id, self._menu_chan_id = None, None
 
     async def save_settings(self):
         """
         ### (method) save_settings()
         Save the current `reaction_roles` dict and the IDs for the `role_menu`
-
-        NOTE: accuracy could be traded off for performance by saving with a `discord.ext.tasks.Loop`
-        instead of saving on each settings update
         """
         # combine the channel and message IDs with the reaction roles
         to_save = {
@@ -96,22 +76,7 @@ class ReactionRoles(commands.Cog):
         with open("./text_files/reaction_roles.json", "w") as file:
             dump(to_save, file)
 
-    @property
-    def emotes(self) -> List[Emoji]:
-        """
-        ### (property) emotes()
-        Convert the emote IDs in `reaction_roles` to Emoji instances
-
-        ### Returns
-            `List[Emoji]`:
-                The Emojis
-        """
-        return list(filter(  # remove failed requests
-            None,
-            [self.bot.get_emoji(id) for id in self.reaction_roles]
-        ))
-
-    @commands.command(aliases=["BM"])
+    @commands.command()
     # Discord will convert a message ID or link to a Message object
     async def bind_message(self, ctx: commands.Context, message: Message):
         """Set up the role menu message. Pass in a message ID or link."""
@@ -124,17 +89,14 @@ class ReactionRoles(commands.Cog):
             # save the message and channel id
             self._menu_msg_id, self._menu_chan_id = message.id, message.channel.id
             # set up the reactions
-            # the list comp. retrieves the emote objects
-            for emote in self.emotes:
+            # retrieve the emote objects
+            for emote in [self.bot.get_emoji(id) for id in self.reaction_roles.keys()]:
                 await message.add_reaction(emote)
             await ctx.send("Successfully bound the message.")
-
-            # save the new stuff
-            create_task(self.save_settings())
         except:  # you can add better error handling logic here
             await ctx.send("Failed to bind to the message.")
 
-    @commands.command(aliases=["UM"])
+    @commands.command()
     async def unbind_message(self, ctx: commands.Context):
         """Unbind the currently bound message."""
         # check that there is a bound message
@@ -143,29 +105,20 @@ class ReactionRoles(commands.Cog):
         # remove the current message
         self._menu_msg_id, self._menu_chan_id = None, None
 
-        # save the new stuff
-        create_task(self.save_settings())
-
     @bind_message.error
     async def binding_error_handler(self, ctx: commands.Context, error):
         """Handle an invalid argument when (un)binding a message"""
         if isinstance(error, commands.BadArgument):
             # >={ at the user
             return await ctx.send(">={ Give me a message ID or link")
-        elif isinstance(error, commands.MissingRequiredArgument):
-            # one of the arguments was missed out
-            return await ctx.send(f"I need more arguments. Missed argument: {error.param}")
-        else:
-            return await ctx.send("Internal error")
 
-    @commands.command(aliases=["ARR"])  # register this function as a command
+    @commands.command()  # register this function as a command
     async def add_reaction_role(self, ctx: commands.Context,  # the channel, invoker, etc
                                 # discord will attempt to convert it to a role
-                                role: Union[int, Role],
-                                emoji: Union[int, Emoji]):
-        """Add a new reaction role. You may pass mentions or ids for role and emoji.
-        NOTE: Many default emojis will need to be added by ID. Right click them and copy ID."""
-        # get the id
+                                role: Union[Role, int],
+                                emoji: Union[Emoji, int]):
+        """Add a new reaction role. You may pass mentions or ids for role and emoji"""
+        # get the objects by id if ids were passed
         role_id = role if isinstance(role, int) else role.id
         emoji_id = emoji if isinstance(emoji, int) else emoji.id
 
@@ -175,52 +128,23 @@ class ReactionRoles(commands.Cog):
                                   "Unregister it with `remove_reaction_role`")
 
         # check that role_menu_message has been assigned
-        menu = await self.get_menu()
-        if not menu:
+        if not self._menu_msg_id:
             return await ctx.send("Bind a message with `bind_message` before using this command.")
 
         # register the role and set up the reaction
         self.reaction_roles[emoji_id] = role_id
         try:
-            await menu.add_reaction(emoji)
+            await self.role_menu_message.add_reaction(emoji)
         except Forbidden:  # bot doesn't have permissions to react on the message
             return await ctx.send("Reaction failed. Check my permissions and retry.")
         await ctx.send(f"I have added {emoji} as the reaction for the {role} role.")
 
-    @commands.command(aliases=["RRR"])
-    async def remove_reaction_role(self, ctx, emoji: Union[int, Emoji]):
-        """Remove a reaction role by its emoji."""
-        # get the id
-        emoji_id = emoji if isinstance(emoji, int) else emoji.id
-
-        # check that they're not already registered
-        if emoji_id not in self.reaction_roles.keys():
-            return await ctx.send("That emoji or role isn't registered. "
-                                  "Register it with `add_reaction_role`")
-
-        # check that role_menu_message has been assigned
-        menu = await self.get_menu()
-        if not menu:
-            return await ctx.send("Bind a message with `bind_message` before using this command.")
-
-        # register the role and set up the reaction
-        # for outputting the role name for the user
-        role_id = self.reaction_roles[emoji_id]
-        del self.reaction_roles[emoji_id]
-        try:
-            await menu.remove_reaction(emoji, self.bot.user)
-        except Forbidden:  # bot doesn't have permissions to react on the message
-            return await ctx.send("Reaction failed. Check my permissions and retry.")
-        await ctx.send(f"I have removed {emoji} as the reaction for the {menu.guild.get_role(role_id)} role.")
-
     @add_reaction_role.error
-    @remove_reaction_role.error
-    async def add_reaction_role_error_handler(self, ctx, error):
+    async def add_reaction_role_error_handler(ctx, error):
         """Give the user feedback if their arguments are shit."""
-        if isinstance(error, commands.BadUnionArgument):
+        if isinstance(error, commands.BadArgument):
             # >={ at the user
-            return await ctx.send(">={ I don't understand your arguments. "
-                                  "Please use `help add_reaction_role`")
+            return await ctx.send(">={ I don't understand your arguments")
 
         elif isinstance(error, commands.MissingRequiredArgument):
             # one of the arguments was missed out
@@ -228,15 +152,6 @@ class ReactionRoles(commands.Cog):
 
         elif isinstance(error, commands.CommandError):
             return await ctx.send("Internal error")  # fix your command cunt
-
-    @commands.command(aliases=["CU"])
-    async def current_menu(self, ctx):
-        """Get the currently bound menu."""
-        menu = await self.get_menu()
-        if not menu:
-            return await ctx.send("No bound menu. Bind one with `bind_message`")
-        url = menu.jump_url
-        await ctx.send(url)
 
     @commands.Cog.listener()
     async def on_reaction_add(self, reaction: Reaction, person: Member):
@@ -254,6 +169,10 @@ class ReactionRoles(commands.Cog):
         if person == self.bot.user:
             return
 
+        # make sure that the ids are set
+        if not all((self._menu_msg_id, self._menu_chan_id)):
+            return
+
         # NOTE: the menu is retrieved every time to make sure the message exists still
         # and that the bot still has permissions to see it
         menu = await self.get_menu()
@@ -268,17 +187,10 @@ class ReactionRoles(commands.Cog):
         if not role_id:
             return
 
-        # check if the role still exists
-        role = menu.guild.get_role(role_id)
-        if not role:  # unbind the role if it's gone
-            del self.reaction_roles[reaction.emoji.id]
-            create_task(self.save_settings())
-            return
-
         # attempt to add the role
         try:
             await person.add_roles(
-                role,
+                menu.guild.get_role(role_id),
                 reason="Reacted on the role menu"
             )
         except Forbidden:  # bot doesn't have manage roles permissions
