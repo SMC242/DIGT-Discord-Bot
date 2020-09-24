@@ -75,6 +75,11 @@ async def close(ctx):
     exit(0)
 
 
+@bot.command()
+async def t(ctx, v: int):
+    await ctx.send(bot.get_emoji(v))
+
+
 # running the bot
 @bot.listen()
 async def on_ready():
